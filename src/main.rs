@@ -1,0 +1,412 @@
+mod app;
+mod cli;
+mod crypto;
+mod model;
+mod store;
+
+use app::{MessengerApp, RoomView};
+use chrono::{DateTime, Local};
+use cli::{parse_args, CliCommand};
+use crossterm::cursor::MoveToColumn;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{self, Clear, ClearType};
+use crossterm::{execute, queue};
+use crypto::demo_cipher::DemoCipher;
+use std::io::{self, Write};
+use std::process::ExitCode;
+use std::time::{Duration, Instant};
+use store::FileChatStore;
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<(), String> {
+    let command = parse_args(std::env::args().skip(1))?;
+    let cipher = DemoCipher::new();
+    let store = FileChatStore::new("data");
+    let app = MessengerApp::new(store, cipher);
+
+    match command {
+        CliCommand::Help => {
+            cli::print_help();
+            Ok(())
+        }
+        CliCommand::Chat { user } => run_chat(&app, &user),
+    }
+}
+
+fn run_chat(app: &MessengerApp<FileChatStore, DemoCipher>, user: &str) -> Result<(), String> {
+    let mut current_key = app::DEFAULT_CHAT_KEY.to_string();
+    let mut current_room: Option<String> = None;
+    let mut current_input = String::new();
+    let mut rendered_count = 0usize;
+    let refresh_interval = Duration::from_millis(500);
+    let mut last_refresh = Instant::now();
+    let _raw_mode = RawModeGuard::enable()?;
+
+    println!("chat started for {user}");
+    println!("active key: {current_key}");
+    println!("active room: none");
+    println!("use --create-room or --join-room before sending messages");
+    redraw_prompt(user, current_room.as_deref(), &current_input)?;
+
+    loop {
+        if current_room.is_some() && last_refresh.elapsed() >= refresh_interval {
+            refresh_new_messages(
+                app,
+                current_room.as_deref(),
+                &current_key,
+                &mut rendered_count,
+                user,
+                &current_input,
+            )?;
+            last_refresh = Instant::now();
+        }
+
+        if !event::poll(Duration::from_millis(100))
+            .map_err(|error| format!("failed to poll terminal events: {error}"))?
+        {
+            continue;
+        }
+
+        let terminal_event =
+            event::read().map_err(|error| format!("failed to read terminal event: {error}"))?;
+
+        match terminal_event {
+            Event::Key(key_event) => {
+                if handle_key_event(
+                    key_event,
+                    app,
+                    user,
+                    &mut current_key,
+                    &mut current_room,
+                    &mut current_input,
+                    &mut rendered_count,
+                )? {
+                    println!();
+                    return Ok(());
+                }
+                last_refresh = Instant::now();
+            }
+            Event::Resize(_, _) => {
+                redraw_prompt(user, current_room.as_deref(), &current_input)?;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn handle_key_event(
+    key_event: KeyEvent,
+    app: &MessengerApp<FileChatStore, DemoCipher>,
+    user: &str,
+    current_key: &mut String,
+    current_room: &mut Option<String>,
+    current_input: &mut String,
+    rendered_count: &mut usize,
+) -> Result<bool, String> {
+    if !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return Ok(false);
+    }
+
+    match key_event.code {
+        KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Ok(true);
+        }
+        KeyCode::Enter => {
+            println!();
+            let input = current_input.trim().to_string();
+            current_input.clear();
+
+            if input.is_empty() {
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if input == "--quit" {
+                return Ok(true);
+            }
+
+            if input == "--refresh" {
+                redraw_current_room(app, current_room.as_deref(), current_key, rendered_count)?;
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if input == "--rooms" {
+                clear_input_line()?;
+                print_rooms(app.list_rooms()?);
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if input == "--members" {
+                let room_name = current_room.as_deref().ok_or_else(|| "no active room".to_string())?;
+                clear_input_line()?;
+                print_members(room_name, app.list_members(room_name)?);
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if input == "--leave-room" {
+                let room_name = current_room.clone().ok_or_else(|| "no active room".to_string())?;
+                app.leave_room(user, &room_name)?;
+                *current_room = None;
+                *rendered_count = 0;
+                clear_input_line()?;
+                println!("left room: {room_name}");
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if let Some(new_key) = input.strip_prefix("--key ") {
+                let new_key = new_key.trim();
+                if new_key.is_empty() {
+                    println!("key must not be empty");
+                    redraw_prompt(user, current_room.as_deref(), current_input)?;
+                    return Ok(false);
+                }
+
+                *current_key = new_key.to_string();
+                println!("active key changed to: {current_key}");
+                redraw_current_room(app, current_room.as_deref(), current_key, rendered_count)?;
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if let Some(args) = input.strip_prefix("--create-room ") {
+                let (room_name, limit) = parse_room_creation_args(args)?;
+                app.create_room(user, &room_name, limit)?;
+                *current_room = Some(room_name.clone());
+                *rendered_count = 0;
+                clear_input_line()?;
+                println!("created room: {room_name} (limit {limit})");
+                redraw_current_room(app, current_room.as_deref(), current_key, rendered_count)?;
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if let Some(room_name) = input.strip_prefix("--join-room ") {
+                let room_name = room_name.trim();
+                if room_name.is_empty() {
+                    println!("room name must not be empty");
+                    redraw_prompt(user, current_room.as_deref(), current_input)?;
+                    return Ok(false);
+                }
+                app.join_room(user, room_name)?;
+                *current_room = Some(room_name.to_string());
+                *rendered_count = 0;
+                clear_input_line()?;
+                println!("joined room: {room_name}");
+                redraw_current_room(app, current_room.as_deref(), current_key, rendered_count)?;
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if let Some(limit) = input.strip_prefix("--set-limit ") {
+                let room_name = current_room.as_deref().ok_or_else(|| "no active room".to_string())?;
+                let limit = limit.trim().parse::<usize>().map_err(|_| "invalid limit".to_string())?;
+                app.set_room_limit(user, room_name, limit)?;
+                println!("room limit changed to {limit}");
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if let Some(target) = input.strip_prefix("--kick ") {
+                let room_name = current_room.as_deref().ok_or_else(|| "no active room".to_string())?;
+                let target = target.trim();
+                app.kick_user(user, room_name, target)?;
+                println!("kicked user: {target}");
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            if let Some(target) = input.strip_prefix("--ban ") {
+                let room_name = current_room.as_deref().ok_or_else(|| "no active room".to_string())?;
+                let target = target.trim();
+                app.ban_user(user, room_name, target)?;
+                println!("banned user: {target}");
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+
+            let room_name = current_room.as_deref().ok_or_else(|| "join a room first".to_string())?;
+            app.send_message(room_name, user, current_key, &input)?;
+            refresh_new_messages(
+                app,
+                current_room.as_deref(),
+                current_key,
+                rendered_count,
+                user,
+                current_input,
+            )?;
+            return Ok(false);
+        }
+        KeyCode::Backspace => {
+            current_input.pop();
+        }
+        KeyCode::Char(character) => {
+            if !key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                current_input.push(character);
+            }
+        }
+        _ => {}
+    }
+
+    redraw_prompt(user, current_room.as_deref(), current_input)?;
+    Ok(false)
+}
+
+fn redraw_current_room(
+    app: &MessengerApp<FileChatStore, DemoCipher>,
+    current_room: Option<&str>,
+    key: &str,
+    rendered_count: &mut usize,
+) -> Result<(), String> {
+    clear_input_line()?;
+    if let Some(room_name) = current_room {
+        let messages = app.read_room_chat(room_name, key)?;
+        print_messages(room_name, &messages);
+        *rendered_count = messages.len();
+    } else {
+        *rendered_count = 0;
+        println!("no active room");
+    }
+    Ok(())
+}
+
+fn refresh_new_messages(
+    app: &MessengerApp<FileChatStore, DemoCipher>,
+    current_room: Option<&str>,
+    key: &str,
+    rendered_count: &mut usize,
+    user: &str,
+    current_input: &str,
+) -> Result<(), String> {
+    if let Some(room_name) = current_room {
+        let messages = app.read_room_chat(room_name, key)?;
+        if messages.len() > *rendered_count {
+            clear_input_line()?;
+            for message in &messages[*rendered_count..] {
+                println!(
+                    "[{}] {}: {}",
+                    format_timestamp(message.timestamp),
+                    message.from,
+                    message.text
+                );
+            }
+            *rendered_count = messages.len();
+        }
+    }
+
+    redraw_prompt(user, current_room, current_input)
+}
+
+fn redraw_prompt(user: &str, room_name: Option<&str>, current_input: &str) -> Result<(), String> {
+    let room = room_name.unwrap_or("lobby");
+    let mut stdout = io::stdout();
+    queue!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))
+        .map_err(|error| format!("failed to redraw prompt: {error}"))?;
+    write!(stdout, "{user}@{room}> {current_input}")
+        .map_err(|error| format!("failed to write prompt: {error}"))?;
+    stdout
+        .flush()
+        .map_err(|error| format!("failed to flush stdout: {error}"))
+}
+
+fn clear_input_line() -> Result<(), String> {
+    execute!(io::stdout(), MoveToColumn(0), Clear(ClearType::CurrentLine))
+        .map_err(|error| format!("failed to clear input line: {error}"))
+}
+
+fn print_messages(room_name: &str, messages: &[model::DecryptedMessage]) {
+    if messages.is_empty() {
+        println!("no messages in room {room_name}");
+        return;
+    }
+
+    println!("--- room: {room_name} ---");
+    for message in messages {
+        println!(
+            "[{}] {}: {}",
+            format_timestamp(message.timestamp),
+            message.from,
+            message.text
+        );
+    }
+    println!("-----------------");
+}
+
+fn print_rooms(rooms: Vec<RoomView>) {
+    if rooms.is_empty() {
+        println!("no rooms created yet");
+        return;
+    }
+
+    println!("--- rooms ---");
+    for room in rooms {
+        println!(
+            "{} | owner: {} | members: {}/{}",
+            room.name, room.owner, room.members, room.limit
+        );
+    }
+    println!("-------------");
+}
+
+fn print_members(room_name: &str, members: Vec<String>) {
+    println!("--- members in {room_name} ---");
+    if members.is_empty() {
+        println!("no members");
+    } else {
+        for member in members {
+            println!("{member}");
+        }
+    }
+    println!("----------------------");
+}
+
+fn parse_room_creation_args(input: &str) -> Result<(String, usize), String> {
+    let mut parts = input.split_whitespace();
+    let room_name = parts
+        .next()
+        .ok_or_else(|| "room name must not be empty".to_string())?
+        .to_string();
+    let limit = match parts.next() {
+        Some(limit) => limit.parse::<usize>().map_err(|_| "invalid room limit".to_string())?,
+        None => app::DEFAULT_ROOM_LIMIT,
+    };
+    Ok((room_name, limit))
+}
+
+fn format_timestamp(timestamp: u64) -> String {
+    match DateTime::from_timestamp(timestamp as i64, 0) {
+        Some(utc_time) => utc_time
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        None => timestamp.to_string(),
+    }
+}
+
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Result<Self, String> {
+        terminal::enable_raw_mode()
+            .map_err(|error| format!("failed to enable raw mode: {error}"))?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
