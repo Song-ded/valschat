@@ -10,14 +10,19 @@
   <div class="shell">
     <aside class="sidebar">
       <div class="brand">
-        <h1>ValsChat</h1>
-        <p>Browser client</p>
+        <div class="brand-mark">VC</div>
+        <div>
+          <h1>ValsChat</h1>
+          <p>Rooms, keys, and browser chat in one place.</p>
+        </div>
       </div>
 
       <section class="panel" id="auth-panel">
-        <h2>Account</h2>
+        <div class="panel-head">
+          <h2>Account</h2>
+          <span class="chip">This browser</span>
+        </div>
         <div class="session-line" id="session-line">Not authorized</div>
-        <input id="server-url" type="text" placeholder="Server URL" />
         <input id="auth-user" type="text" placeholder="Username" />
         <input id="auth-password" type="password" placeholder="Password" />
         <div class="row">
@@ -28,7 +33,10 @@
       </section>
 
       <section class="panel">
-        <h2>Rooms</h2>
+        <div class="panel-head">
+          <h2>Rooms</h2>
+          <span class="chip">Shared space</span>
+        </div>
         <div class="row compact">
           <input id="create-room-name" type="text" placeholder="Room name" />
           <input id="create-room-limit" type="number" min="1" max="999" value="25" />
@@ -45,7 +53,8 @@
 
     <main class="main">
       <header class="topbar">
-        <div>
+        <div class="topbar-copy">
+          <div class="eyebrow">Live room</div>
           <h2 id="room-title">No active room</h2>
           <p id="room-subtitle">Login and join a room to begin.</p>
         </div>
@@ -60,10 +69,15 @@
       </section>
 
       <section class="panel composer-panel">
+        <div class="panel-head">
+          <h2>Composer</h2>
+          <span class="chip">80 chars max</span>
+        </div>
         <div class="row compact">
           <input id="message-key" type="text" value="start" placeholder="Message key" />
           <span id="char-counter">0 / 80</span>
         </div>
+        <div class="helper-line">The key is applied locally in this browser before upload.</div>
         <textarea id="message-input" maxlength="80" placeholder="Write a message..."></textarea>
         <div class="row compact">
           <button id="send-btn">Send</button>
@@ -72,7 +86,10 @@
       </section>
 
       <section class="panel admin-panel">
-        <h2>Room Admin</h2>
+        <div class="panel-head">
+          <h2>Room Admin</h2>
+          <span class="chip">Owner tools</span>
+        </div>
         <div class="row compact">
           <input id="limit-input" type="number" min="1" max="999" placeholder="New limit" />
           <button id="set-limit-btn">Set Limit</button>
@@ -85,7 +102,10 @@
       </section>
 
       <section class="panel log-panel">
-        <h2>Log</h2>
+        <div class="panel-head">
+          <h2>Log</h2>
+          <span class="chip">Recent events</span>
+        </div>
         <div id="log-output" class="log-output"></div>
       </section>
     </main>

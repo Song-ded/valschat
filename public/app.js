@@ -1,4 +1,4 @@
-const DEFAULT_SERVER = window.location.origin;
+const DEFAULT_SERVER = 'https://valschat.onrender.com';
 const HEADER = new TextEncoder().encode('MK2|');
 const TAG_LEN = 8;
 const DEFAULT_SIZE = 4;
@@ -7,7 +7,6 @@ const MIXED_POOL = new TextEncoder().encode("12345679123456791234567912345679123
 const MAX_MESSAGE_CHARS = 80;
 
 const els = {
-  serverUrl: document.getElementById('server-url'),
   authUser: document.getElementById('auth-user'),
   authPassword: document.getElementById('auth-password'),
   registerBtn: document.getElementById('register-btn'),
@@ -45,13 +44,15 @@ const state = {
   activeRoom: null,
   rooms: [],
   lastSeenId: null,
-  refreshTimer: null
+  refreshTimer: null,
+  renderedMessageIds: new Set(),
+  sendingMessage: false,
+  refreshingMessages: false
 };
 
 init();
 
 function init() {
-  els.serverUrl.value = state.session?.server || DEFAULT_SERVER;
   updateSessionUi();
   updateCharCounter();
   bindEvents();
@@ -72,6 +73,8 @@ function bindEvents() {
   els.sendBtn.addEventListener('click', sendMessage);
   els.helpBtn.addEventListener('click', showHelp);
   els.messageInput.addEventListener('input', updateCharCounter);
+  els.messageInput.addEventListener('keydown', handleComposerKeydown);
+  els.messageKey.addEventListener('input', handleKeyChange);
   els.setLimitBtn.addEventListener('click', setLimit);
   els.kickBtn.addEventListener('click', () => roomAction('kick'));
   els.banBtn.addEventListener('click', () => roomAction('ban'));
@@ -120,6 +123,7 @@ async function logout() {
   state.activeRoom = null;
   state.lastSeenId = null;
   state.rooms = [];
+  state.renderedMessageIds = new Set();
   renderRooms();
   renderMessages([]);
   updateSessionUi();
@@ -153,6 +157,7 @@ async function createRoom() {
     });
     state.activeRoom = name;
     state.lastSeenId = null;
+    state.renderedMessageIds = new Set();
     log(`Created room ${name}`);
     await refreshRooms();
     await refreshMessagesFull();
@@ -170,6 +175,7 @@ async function joinRoom(name) {
     await authorizedFetch(`/rooms/${encodeURIComponent(name)}/join`, { method: 'POST' });
     state.activeRoom = name;
     state.lastSeenId = null;
+    state.renderedMessageIds = new Set();
     log(`Joined room ${name}`);
     await refreshRooms();
     await refreshMessagesFull();
@@ -188,6 +194,7 @@ async function leaveRoom() {
     log(`Left room ${state.activeRoom}`);
     state.activeRoom = null;
     state.lastSeenId = null;
+    state.renderedMessageIds = new Set();
     renderMessages([]);
     updateRoomHeader();
     await refreshRooms();
@@ -241,6 +248,9 @@ async function roomAction(kind) {
 }
 
 async function sendMessage() {
+  if (state.sendingMessage) {
+    return;
+  }
   if (!state.activeRoom) {
     log('Join a room first.');
     return;
@@ -261,6 +271,8 @@ async function sendMessage() {
   }
 
   try {
+    state.sendingMessage = true;
+    els.sendBtn.disabled = true;
     const ciphertext = hexEncode(encryptMessage(key, text));
     await authorizedFetch(`/rooms/${encodeURIComponent(state.activeRoom)}/messages`, {
       method: 'POST',
@@ -271,16 +283,23 @@ async function sendMessage() {
     await refreshMessagesIncremental();
   } catch (error) {
     log(error.message);
+  } finally {
+    state.sendingMessage = false;
+    els.sendBtn.disabled = false;
   }
 }
 
 async function refreshMessagesFull() {
+  if (state.refreshingMessages) {
+    return;
+  }
   if (!state.activeRoom) {
     renderMessages([]);
     updateRoomHeader();
     return;
   }
   try {
+    state.refreshingMessages = true;
     const messages = await authorizedFetch(`/rooms/${encodeURIComponent(state.activeRoom)}/messages`);
     const decoded = messages.map(toDisplayMessage);
     state.lastSeenId = decoded.length ? decoded[decoded.length - 1].id : null;
@@ -288,15 +307,21 @@ async function refreshMessagesFull() {
     updateRoomHeader();
   } catch (error) {
     log(error.message);
+  } finally {
+    state.refreshingMessages = false;
   }
 }
 
 async function refreshMessagesIncremental() {
+  if (state.refreshingMessages || !state.session) {
+    return;
+  }
   if (!state.activeRoom) {
     return;
   }
   const suffix = state.lastSeenId ? `?after_id=${state.lastSeenId}` : '';
   try {
+    state.refreshingMessages = true;
     const messages = await authorizedFetch(`/rooms/${encodeURIComponent(state.activeRoom)}/messages${suffix}`);
     if (!messages.length) {
       return;
@@ -307,6 +332,8 @@ async function refreshMessagesIncremental() {
     updateRoomHeader();
   } catch (error) {
     log(error.message);
+  } finally {
+    state.refreshingMessages = false;
   }
 }
 
@@ -320,6 +347,7 @@ function renderRooms() {
     item.addEventListener('click', async () => {
       state.activeRoom = room.name;
       state.lastSeenId = null;
+      state.renderedMessageIds = new Set();
       await refreshMessagesFull();
       renderRooms();
     });
@@ -329,12 +357,20 @@ function renderRooms() {
 
 function renderMessages(messages) {
   els.messages.innerHTML = '';
+  state.renderedMessageIds = new Set();
   appendMessages(messages);
 }
 
 function appendMessages(messages) {
   for (const message of messages) {
+    if (state.renderedMessageIds.has(message.id)) {
+      continue;
+    }
+    state.renderedMessageIds.add(message.id);
     const node = els.messageTemplate.content.firstElementChild.cloneNode(true);
+    if (state.session && message.from === state.session.user) {
+      node.classList.add('own');
+    }
     node.querySelector('.message-meta').textContent = `[${formatTimestamp(message.timestamp)}] ${message.from}`;
     node.querySelector('.message-text').textContent = message.text;
     els.messages.appendChild(node);
@@ -351,14 +387,13 @@ function updateRoomHeader() {
   const room = state.rooms.find((entry) => entry.name === state.activeRoom);
   els.roomTitle.textContent = state.activeRoom;
   els.roomSubtitle.textContent = room
-    ? `Owner: ${room.owner} - Members: ${room.members}/${room.limit}`
+    ? `Owner: ${room.owner} - Members: ${room.members}/${room.limit} - Key: ${els.messageKey.value || 'start'}`
     : 'Room is active.';
 }
 
 function updateSessionUi() {
   if (state.session) {
-    els.sessionLine.textContent = `${state.session.user} @ ${state.session.server}`;
-    els.serverUrl.value = state.session.server;
+    els.sessionLine.textContent = state.session.user;
     startPolling();
   } else {
     els.sessionLine.textContent = 'Not authorized';
@@ -373,6 +408,20 @@ function updateCharCounter() {
 
 function showHelp() {
   log('Commands: create room, join room, leave room, set limit, kick, ban, refresh, logout. Message limit: 80 chars.');
+}
+
+function handleComposerKeydown(event) {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    sendMessage();
+  }
+}
+
+function handleKeyChange() {
+  updateRoomHeader();
+  if (state.activeRoom) {
+    refreshMessagesFull();
+  }
 }
 
 function log(message) {
@@ -399,7 +448,7 @@ function stopPolling() {
 }
 
 function normalizedServer() {
-  return (els.serverUrl.value.trim() || DEFAULT_SERVER).replace(/\/$/, '');
+  return DEFAULT_SERVER.replace(/\/$/, '');
 }
 
 async function authorizedFetch(path, options = {}) {
