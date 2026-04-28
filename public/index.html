@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ValsChat</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>ValsChat</h1>
+        <p>Browser client</p>
+      </div>
+
+      <section class="panel" id="auth-panel">
+        <h2>Account</h2>
+        <div class="session-line" id="session-line">Not authorized</div>
+        <input id="server-url" type="text" placeholder="Server URL" />
+        <input id="auth-user" type="text" placeholder="Username" />
+        <input id="auth-password" type="password" placeholder="Password" />
+        <div class="row">
+          <button id="register-btn">Register</button>
+          <button id="login-btn">Login</button>
+        </div>
+        <button class="ghost" id="logout-btn">Logout This Browser</button>
+      </section>
+
+      <section class="panel">
+        <h2>Rooms</h2>
+        <div class="row compact">
+          <input id="create-room-name" type="text" placeholder="Room name" />
+          <input id="create-room-limit" type="number" min="1" max="999" value="25" />
+        </div>
+        <button id="create-room-btn">Create Room</button>
+        <div class="row compact">
+          <input id="join-room-name" type="text" placeholder="Join room" />
+          <button id="join-room-btn">Join</button>
+        </div>
+        <button class="ghost" id="refresh-rooms-btn">Refresh Rooms</button>
+        <div id="room-list" class="room-list"></div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h2 id="room-title">No active room</h2>
+          <p id="room-subtitle">Login and join a room to begin.</p>
+        </div>
+        <div class="top-actions">
+          <button class="ghost" id="leave-room-btn">Leave Room</button>
+          <button class="ghost" id="refresh-messages-btn">Refresh</button>
+        </div>
+      </header>
+
+      <section class="message-wrap">
+        <div id="messages" class="messages"></div>
+      </section>
+
+      <section class="panel composer-panel">
+        <div class="row compact">
+          <input id="message-key" type="text" value="start" placeholder="Message key" />
+          <span id="char-counter">0 / 80</span>
+        </div>
+        <textarea id="message-input" maxlength="80" placeholder="Write a message..."></textarea>
+        <div class="row compact">
+          <button id="send-btn">Send</button>
+          <button class="ghost" id="help-btn">Help</button>
+        </div>
+      </section>
+
+      <section class="panel admin-panel">
+        <h2>Room Admin</h2>
+        <div class="row compact">
+          <input id="limit-input" type="number" min="1" max="999" placeholder="New limit" />
+          <button id="set-limit-btn">Set Limit</button>
+        </div>
+        <div class="row compact">
+          <input id="target-user" type="text" placeholder="Target user" />
+          <button id="kick-btn">Kick</button>
+          <button id="ban-btn">Ban</button>
+        </div>
+      </section>
+
+      <section class="panel log-panel">
+        <h2>Log</h2>
+        <div id="log-output" class="log-output"></div>
+      </section>
+    </main>
+  </div>
+
+  <template id="message-template">
+    <div class="message-card">
+      <div class="message-meta"></div>
+      <div class="message-text"></div>
+    </div>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

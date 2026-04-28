@@ -18,6 +18,9 @@ const ROOM_WINDOW_SECS: u64 = 60;
 const ROOM_LIMIT: usize = 30;
 const MESSAGE_WINDOW_SECS: u64 = 10;
 const MESSAGE_LIMIT: usize = 12;
+const INDEX_HTML: &str = include_str!("../../public/index.html");
+const STYLES_CSS: &str = include_str!("../../public/styles.css");
+const APP_JS: &str = include_str!("../../public/app.js");
 
 #[derive(Clone)]
 struct AppState {
@@ -28,10 +31,15 @@ struct AppState {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ServerData {
+    #[serde(default = "default_counter")]
     next_message_id: u64,
+    #[serde(default = "default_counter")]
     next_token_id: u64,
+    #[serde(default)]
     rooms: BTreeMap<String, RoomState>,
+    #[serde(default)]
     users: BTreeMap<String, UserAccount>,
+    #[serde(default)]
     sessions: BTreeMap<String, String>,
 }
 
@@ -134,6 +142,9 @@ async fn run() -> Result<(), String> {
     };
 
     let app = Router::new()
+        .route("/", get(index))
+        .route("/styles.css", get(styles))
+        .route("/app.js", get(app_js))
         .route("/health", get(health))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
@@ -165,6 +176,32 @@ async fn run() -> Result<(), String> {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn index() -> ([(axum::http::header::HeaderName, &'static str); 1], &'static str) {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        INDEX_HTML,
+    )
+}
+
+async fn styles() -> ([(axum::http::header::HeaderName, &'static str); 1], &'static str) {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        STYLES_CSS,
+    )
+}
+
+async fn app_js() -> ([(axum::http::header::HeaderName, &'static str); 1], &'static str) {
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+        ],
+        APP_JS,
+    )
 }
 
 async fn register(
@@ -564,6 +601,10 @@ async fn enforce_rate_limit(
     }
     bucket.push(now);
     Ok(())
+}
+
+fn default_counter() -> u64 {
+    1
 }
 
 fn cleanup_empty_room(data: &mut ServerData, room_name: &str) {

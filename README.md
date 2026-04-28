@@ -2,6 +2,22 @@
 
 Room-based Rust messenger with client-side encryption and an HTTP server for message delivery.
 
+## Browser client
+
+After deploying the server, open its root URL in a browser:
+
+- [https://valschat.onrender.com/](https://valschat.onrender.com/)
+
+The browser client is served directly by the Rust server, so people can use the chat without installing Rust or running `cargo run`.
+
+Inside the browser client you can:
+
+- register and login
+- create and join rooms
+- enter your `--key` equivalent in the key field
+- send encrypted messages with the same client-side cipher
+- decrypt incoming room messages locally in the browser
+
 ## Commands
 
 Register:
