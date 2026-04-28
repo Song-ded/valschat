@@ -14,7 +14,9 @@ use crypto::demo_cipher::DemoCipher;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
-use store::ServerApi;
+use store::{SavedSession, ServerApi, SessionStore};
+
+const SESSION_PATH: &str = "client-data/session.json";
 
 fn main() -> ExitCode {
     match run() {
@@ -28,21 +30,65 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let command = parse_args(std::env::args().skip(1))?;
+    let sessions = SessionStore::new(SESSION_PATH);
 
     match command {
         CliCommand::Help => {
             cli::print_help();
             Ok(())
         }
-        CliCommand::Chat { user, server } => {
-            let cipher = DemoCipher::new();
-            let app = MessengerApp::new(ServerApi::new(server), cipher);
-            run_chat(&app, &user)
+        CliCommand::Register { user, password, server } => {
+            let session = ServerApi::new(server, None).register(&user, &password)?;
+            sessions.save(&session)?;
+            println!("registered and logged in as {}", session.user);
+            Ok(())
+        }
+        CliCommand::Login { user, password, server } => {
+            let session = ServerApi::new(server, None).login(&user, &password)?;
+            sessions.save(&session)?;
+            println!("logged in as {}", session.user);
+            Ok(())
+        }
+        CliCommand::Logout { server } => logout(&sessions, server.as_deref()),
+        CliCommand::Status => {
+            match sessions.load()? {
+                Some(session) => {
+                    println!("authorized as {}", session.user);
+                    println!("server: {}", session.server);
+                }
+                None => println!("not authorized on this PC"),
+            }
+            Ok(())
+        }
+        CliCommand::Chat { server } => {
+            let session = sessions
+                .load()?
+                .ok_or_else(|| "not authorized on this PC, use register or login first".to_string())?;
+            let server_url = server.unwrap_or_else(|| session.server.clone());
+            let app = MessengerApp::new(
+                ServerApi::new(server_url, Some(session.token.clone())),
+                DemoCipher::new(),
+            );
+            run_chat(&app, &session, &sessions)
         }
     }
 }
 
-fn run_chat(app: &MessengerApp<DemoCipher>, user: &str) -> Result<(), String> {
+fn logout(sessions: &SessionStore, server_override: Option<&str>) -> Result<(), String> {
+    let Some(session) = sessions.load()? else {
+        println!("not authorized on this PC");
+        return Ok(());
+    };
+
+    let server_url = server_override.unwrap_or(&session.server).to_string();
+    let api = ServerApi::new(server_url, Some(session.token));
+    let _ = api.logout();
+    sessions.clear()?;
+    println!("logged out on this PC");
+    Ok(())
+}
+
+fn run_chat(app: &MessengerApp<DemoCipher>, session: &SavedSession, sessions: &SessionStore) -> Result<(), String> {
     let mut current_key = app::DEFAULT_CHAT_KEY.to_string();
     let mut current_room: Option<String> = None;
     let mut current_input = String::new();
@@ -51,11 +97,11 @@ fn run_chat(app: &MessengerApp<DemoCipher>, user: &str) -> Result<(), String> {
     let mut last_refresh = Instant::now();
     let _raw_mode = RawModeGuard::enable()?;
 
-    println!("chat started for {user}");
+    println!("chat started for {}", session.user);
     println!("active key: {current_key}");
     println!("active room: none");
-    println!("use --create-room or --join-room before sending messages");
-    redraw_prompt(user, current_room.as_deref(), &current_input)?;
+    println!("use --help for chat commands");
+    redraw_prompt(&session.user, current_room.as_deref(), &current_input)?;
 
     loop {
         if current_room.is_some() && last_refresh.elapsed() >= refresh_interval {
@@ -64,7 +110,7 @@ fn run_chat(app: &MessengerApp<DemoCipher>, user: &str) -> Result<(), String> {
                 current_room.as_deref(),
                 &current_key,
                 &mut last_seen_id,
-                user,
+                &session.user,
                 &current_input,
             )?;
             last_refresh = Instant::now();
@@ -84,7 +130,8 @@ fn run_chat(app: &MessengerApp<DemoCipher>, user: &str) -> Result<(), String> {
                 if handle_key_event(
                     key_event,
                     app,
-                    user,
+                    &session.user,
+                    sessions,
                     &mut current_key,
                     &mut current_room,
                     &mut current_input,
@@ -95,9 +142,7 @@ fn run_chat(app: &MessengerApp<DemoCipher>, user: &str) -> Result<(), String> {
                 }
                 last_refresh = Instant::now();
             }
-            Event::Resize(_, _) => {
-                redraw_prompt(user, current_room.as_deref(), &current_input)?;
-            }
+            Event::Resize(_, _) => redraw_prompt(&session.user, current_room.as_deref(), &current_input)?,
             _ => {}
         }
     }
@@ -107,6 +152,7 @@ fn handle_key_event(
     key_event: KeyEvent,
     app: &MessengerApp<DemoCipher>,
     user: &str,
+    sessions: &SessionStore,
     current_key: &mut String,
     current_room: &mut Option<String>,
     current_input: &mut String,
@@ -117,9 +163,7 @@ fn handle_key_event(
     }
 
     match key_event.code {
-        KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            return Ok(true);
-        }
+        KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
         KeyCode::Enter => {
             println!();
             let input = current_input.trim().to_string();
@@ -133,20 +177,28 @@ fn handle_key_event(
             if input == "--quit" {
                 return Ok(true);
             }
-
+            if input == "--help" {
+                clear_input_line()?;
+                cli::print_chat_help();
+                redraw_prompt(user, current_room.as_deref(), current_input)?;
+                return Ok(false);
+            }
+            if input == "--logout" {
+                sessions.clear()?;
+                println!("logged out on this PC");
+                return Ok(true);
+            }
             if input == "--refresh" {
                 redraw_current_room(app, current_room.as_deref(), current_key, last_seen_id)?;
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
-
             if input == "--rooms" {
                 clear_input_line()?;
                 print_rooms(app.list_rooms()?);
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
-
             if input == "--members" {
                 let room_name = current_room.as_deref().ok_or_else(|| "no active room".to_string())?;
                 clear_input_line()?;
@@ -154,10 +206,9 @@ fn handle_key_event(
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
-
             if input == "--leave-room" {
                 let room_name = current_room.clone().ok_or_else(|| "no active room".to_string())?;
-                app.leave_room(user, &room_name)?;
+                app.leave_room(&room_name)?;
                 *current_room = None;
                 *last_seen_id = None;
                 clear_input_line()?;
@@ -165,7 +216,6 @@ fn handle_key_event(
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
-
             if let Some(new_key) = input.strip_prefix("--key ") {
                 let new_key = new_key.trim();
                 if new_key.is_empty() {
@@ -173,17 +223,15 @@ fn handle_key_event(
                     redraw_prompt(user, current_room.as_deref(), current_input)?;
                     return Ok(false);
                 }
-
                 *current_key = new_key.to_string();
                 println!("active key changed to: {current_key}");
                 redraw_current_room(app, current_room.as_deref(), current_key, last_seen_id)?;
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
-
             if let Some(args) = input.strip_prefix("--create-room ") {
                 let (room_name, limit) = parse_room_creation_args(args)?;
-                app.create_room(user, &room_name, limit)?;
+                app.create_room(&room_name, limit)?;
                 *current_room = Some(room_name.clone());
                 *last_seen_id = None;
                 clear_input_line()?;
@@ -192,7 +240,6 @@ fn handle_key_event(
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
-
             if let Some(room_name) = input.strip_prefix("--join-room ") {
                 let room_name = room_name.trim();
                 if room_name.is_empty() {
@@ -200,7 +247,7 @@ fn handle_key_event(
                     redraw_prompt(user, current_room.as_deref(), current_input)?;
                     return Ok(false);
                 }
-                app.join_room(user, room_name)?;
+                app.join_room(room_name)?;
                 *current_room = Some(room_name.to_string());
                 *last_seen_id = None;
                 clear_input_line()?;
@@ -209,44 +256,34 @@ fn handle_key_event(
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
-
             if let Some(limit) = input.strip_prefix("--set-limit ") {
                 let room_name = current_room.as_deref().ok_or_else(|| "no active room".to_string())?;
                 let limit = limit.trim().parse::<usize>().map_err(|_| "invalid limit".to_string())?;
-                app.set_room_limit(user, room_name, limit)?;
+                app.set_room_limit(room_name, limit)?;
                 println!("room limit changed to {limit}");
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
-
             if let Some(target) = input.strip_prefix("--kick ") {
                 let room_name = current_room.as_deref().ok_or_else(|| "no active room".to_string())?;
                 let target = target.trim();
-                app.kick_user(user, room_name, target)?;
+                app.kick_user(room_name, target)?;
                 println!("kicked user: {target}");
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
-
             if let Some(target) = input.strip_prefix("--ban ") {
                 let room_name = current_room.as_deref().ok_or_else(|| "no active room".to_string())?;
                 let target = target.trim();
-                app.ban_user(user, room_name, target)?;
+                app.ban_user(room_name, target)?;
                 println!("banned user: {target}");
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
 
             let room_name = current_room.as_deref().ok_or_else(|| "join a room first".to_string())?;
-            app.send_message(room_name, user, current_key, &input)?;
-            refresh_new_messages(
-                app,
-                current_room.as_deref(),
-                current_key,
-                last_seen_id,
-                user,
-                current_input,
-            )?;
+            app.send_message(room_name, current_key, &input)?;
+            refresh_new_messages(app, current_room.as_deref(), current_key, last_seen_id, user, current_input)?;
             return Ok(false);
         }
         KeyCode::Backspace => {
@@ -295,12 +332,7 @@ fn refresh_new_messages(
         if !messages.is_empty() {
             clear_input_line()?;
             for message in &messages {
-                println!(
-                    "[{}] {}: {}",
-                    format_timestamp(message.timestamp),
-                    message.from,
-                    message.text
-                );
+                println!("[{}] {}: {}", format_timestamp(message.timestamp), message.from, message.text);
             }
             *last_seen_id = messages.last().map(|message| message.id).or(*last_seen_id);
         }
@@ -316,9 +348,7 @@ fn redraw_prompt(user: &str, room_name: Option<&str>, current_input: &str) -> Re
         .map_err(|error| format!("failed to redraw prompt: {error}"))?;
     write!(stdout, "{user}@{room}> {current_input}")
         .map_err(|error| format!("failed to write prompt: {error}"))?;
-    stdout
-        .flush()
-        .map_err(|error| format!("failed to flush stdout: {error}"))
+    stdout.flush().map_err(|error| format!("failed to flush stdout: {error}"))
 }
 
 fn clear_input_line() -> Result<(), String> {
@@ -331,15 +361,9 @@ fn print_messages(room_name: &str, messages: &[ChatMessageView]) {
         println!("no messages in room {room_name}");
         return;
     }
-
     println!("--- room: {room_name} ---");
     for message in messages {
-        println!(
-            "[{}] {}: {}",
-            format_timestamp(message.timestamp),
-            message.from,
-            message.text
-        );
+        println!("[{}] {}: {}", format_timestamp(message.timestamp), message.from, message.text);
     }
     println!("-----------------");
 }
@@ -349,13 +373,9 @@ fn print_rooms(rooms: Vec<RoomView>) {
         println!("no rooms created yet");
         return;
     }
-
     println!("--- rooms ---");
     for room in rooms {
-        println!(
-            "{} | owner: {} | members: {}/{}",
-            room.name, room.owner, room.members, room.limit
-        );
+        println!("{} | owner: {} | members: {}/{}", room.name, room.owner, room.members, room.limit);
     }
     println!("-------------");
 }
@@ -387,10 +407,7 @@ fn parse_room_creation_args(input: &str) -> Result<(String, usize), String> {
 
 fn format_timestamp(timestamp: u64) -> String {
     match DateTime::from_timestamp(timestamp as i64, 0) {
-        Some(utc_time) => utc_time
-            .with_timezone(&Local)
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string(),
+        Some(utc_time) => utc_time.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string(),
         None => timestamp.to_string(),
     }
 }
@@ -399,8 +416,7 @@ struct RawModeGuard;
 
 impl RawModeGuard {
     fn enable() -> Result<Self, String> {
-        terminal::enable_raw_mode()
-            .map_err(|error| format!("failed to enable raw mode: {error}"))?;
+        terminal::enable_raw_mode().map_err(|error| format!("failed to enable raw mode: {error}"))?;
         Ok(Self)
     }
 }
@@ -410,4 +426,3 @@ impl Drop for RawModeGuard {
         let _ = terminal::disable_raw_mode();
     }
 }
-

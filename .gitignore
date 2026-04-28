@@ -4,3 +4,6 @@
 /data
 /server-data
 *.log
+
+/client-data
+/dist

@@ -4,13 +4,31 @@ Room-based Rust messenger with client-side encryption and an HTTP server for mes
 
 ## Commands
 
-Client:
+Register:
 
 ```powershell
-cargo run -- chat --user alice --server http://127.0.0.1:25655
+cargo run -- register --user alice --password 1234 --server https://valschat.onrender.com
 ```
 
-Server:
+Login:
+
+```powershell
+cargo run -- login --user alice --password 1234 --server https://valschat.onrender.com
+```
+
+Chat:
+
+```powershell
+cargo run -- chat --server https://valschat.onrender.com
+```
+
+Logout on this PC:
+
+```powershell
+cargo run -- logout --server https://valschat.onrender.com
+```
+
+Server from source:
 
 ```powershell
 cargo run --bin server
@@ -22,6 +40,7 @@ You can override it with `PORT`.
 ## Chat commands
 
 ```text
+--help
 --key <secret>
 --create-room <name> [limit]
 --join-room <name>
@@ -32,57 +51,57 @@ You can override it with `PORT`.
 --kick <user>
 --ban <user>
 --refresh
+--logout
 --quit
 ```
 
-## Server API
+## Packaged Windows release
 
-```text
-GET  /health
-GET  /rooms
-POST /rooms
-POST /rooms/{room}/join
-POST /rooms/{room}/leave
-POST /rooms/{room}/limit
-POST /rooms/{room}/kick
-POST /rooms/{room}/ban
-GET  /rooms/{room}/members
-GET  /rooms/{room}/messages?after_id=<id>
-POST /rooms/{room}/messages
+Build ready-to-run `.exe` packages without using `cargo run`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build-release.ps1
 ```
 
-## Message flow
+This creates:
 
-- client encrypts the message locally with the active `--key`
-- client sends only ciphertext to the server
-- server stores only ciphertext and returns only ciphertext
-- every client decrypts locally with its own `--key`
+- `dist\client\messanger.exe`
+- `dist\client\register.bat`
+- `dist\client\login.bat`
+- `dist\client\chat.bat`
+- `dist\client\status.bat`
+- `dist\client\logout.bat`
+- `dist\server\server.exe`
+- `dist\server\start-server.bat`
 
-## Example message payload
+Example packaged client usage:
 
-```json
-{
-  "from": "alice",
-  "ciphertext": "4d4b327c..."
-}
+```powershell
+dist\client\register.bat alice 1234 https://valschat.onrender.com
+dist\client\chat.bat --server https://valschat.onrender.com
 ```
 
 ## Current behavior
 
+- users register and login
+- login is remembered on this PC in `client-data/session.json`
+- `logout` removes local authorization on this PC
 - rooms are separate from encryption keys
-- users create and join named rooms
 - each room has an owner
 - owner can set member limit, kick users, and ban users
 - when the last member leaves, the room is deleted automatically
-- user must join a room before sending messages
-- the whole key is used for message encryption inside the current room
-- wrong key is shown as `[wrong key] ...`
+- message length is limited to `80` characters
+- the client encrypts locally before upload
+- the server stores and returns only ciphertext
+- ciphertext integrity is checked before normal decryption
 - server state is stored in `server-data/state.json`
+- server enforces rate limits on auth, room actions, and message sending
 
 ## Project layout
 
 - `src/crypto/demo_cipher.rs`: client-side cipher based on the restored C++ algorithm
-- `src/store.rs`: blocking HTTP client for rooms and ciphertext history
+- `src/store.rs`: blocking HTTP client, session store, and auth API
 - `src/app.rs`: client room and chat operations over HTTP
 - `src/main.rs`: interactive terminal client
-- `src/bin/server.rs`: HTTP server for rooms, members, bans, and ciphertext history
+- `src/bin/server.rs`: HTTP server for auth, rooms, members, bans, rate limits, and ciphertext history
+- `build-release.ps1`: builds ready-to-run Windows release packages

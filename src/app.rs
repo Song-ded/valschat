@@ -3,6 +3,7 @@ use crate::store::{RoomSummary, ServerApi, StoredMessage};
 
 pub const DEFAULT_CHAT_KEY: &str = "start";
 pub const DEFAULT_ROOM_LIMIT: usize = 25;
+pub const MAX_MESSAGE_CHARS: usize = 80;
 
 pub struct MessengerApp<C> {
     server: ServerApi,
@@ -31,48 +32,42 @@ where
         Self { server, cipher }
     }
 
-    pub fn create_room(&self, owner: &str, room_name: &str, limit: usize) -> Result<(), String> {
-        validate_user(owner)?;
+    pub fn create_room(&self, room_name: &str, limit: usize) -> Result<(), String> {
         validate_room_name(room_name)?;
         if limit == 0 {
             return Err("room limit must be greater than zero".to_string());
         }
-        self.server.create_room(owner, room_name, limit)
+        self.server.create_room(room_name, limit)
     }
 
-    pub fn join_room(&self, user: &str, room_name: &str) -> Result<(), String> {
-        validate_user(user)?;
+    pub fn join_room(&self, room_name: &str) -> Result<(), String> {
         validate_room_name(room_name)?;
-        self.server.join_room(user, room_name)
+        self.server.join_room(room_name)
     }
 
-    pub fn leave_room(&self, user: &str, room_name: &str) -> Result<(), String> {
-        validate_user(user)?;
+    pub fn leave_room(&self, room_name: &str) -> Result<(), String> {
         validate_room_name(room_name)?;
-        self.server.leave_room(user, room_name)
+        self.server.leave_room(room_name)
     }
 
-    pub fn set_room_limit(&self, owner: &str, room_name: &str, limit: usize) -> Result<(), String> {
-        validate_user(owner)?;
+    pub fn set_room_limit(&self, room_name: &str, limit: usize) -> Result<(), String> {
         validate_room_name(room_name)?;
         if limit == 0 {
             return Err("room limit must be greater than zero".to_string());
         }
-        self.server.set_room_limit(owner, room_name, limit)
+        self.server.set_room_limit(room_name, limit)
     }
 
-    pub fn kick_user(&self, owner: &str, room_name: &str, target: &str) -> Result<(), String> {
-        validate_user(owner)?;
+    pub fn kick_user(&self, room_name: &str, target: &str) -> Result<(), String> {
         validate_user(target)?;
         validate_room_name(room_name)?;
-        self.server.kick_user(owner, room_name, target)
+        self.server.kick_user(room_name, target)
     }
 
-    pub fn ban_user(&self, owner: &str, room_name: &str, target: &str) -> Result<(), String> {
-        validate_user(owner)?;
+    pub fn ban_user(&self, room_name: &str, target: &str) -> Result<(), String> {
         validate_user(target)?;
         validate_room_name(room_name)?;
-        self.server.ban_user(owner, room_name, target)
+        self.server.ban_user(room_name, target)
     }
 
     pub fn list_rooms(&self) -> Result<Vec<RoomView>, String> {
@@ -93,14 +88,7 @@ where
         Ok(members)
     }
 
-    pub fn send_message(
-        &self,
-        room_name: &str,
-        from: &str,
-        key: &str,
-        message: &str,
-    ) -> Result<(), String> {
-        validate_user(from)?;
+    pub fn send_message(&self, room_name: &str, key: &str, message: &str) -> Result<(), String> {
         validate_room_name(room_name)?;
         if key.is_empty() {
             return Err("key must not be empty".to_string());
@@ -108,10 +96,12 @@ where
         if message.is_empty() {
             return Err("message must not be empty".to_string());
         }
+        if message.chars().count() > MAX_MESSAGE_CHARS {
+            return Err(format!("message must be at most {MAX_MESSAGE_CHARS} characters"));
+        }
 
         let packet = self.cipher.encrypt(key, message.as_bytes())?;
-        self.server
-            .send_message(room_name, from, &hex_encode(&packet.ciphertext))
+        self.server.send_message(room_name, &hex_encode(&packet.ciphertext))
     }
 
     pub fn read_room_chat(
