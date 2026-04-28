@@ -1,6 +1,6 @@
 pub enum CliCommand {
     Help,
-    Chat { user: String },
+    Chat { user: String, server: String },
 }
 
 pub fn parse_args<I>(args: I) -> Result<CliCommand, String>
@@ -23,7 +23,7 @@ pub fn print_help() {
     println!("messanger");
     println!();
     println!("commands:");
-    println!("  chat --user <name>");
+    println!("  chat --user <name> [--server <url>]");
     println!();
     println!("inside chat:");
     println!("  --key <secret>                 switch encryption key");
@@ -37,19 +37,20 @@ pub fn print_help() {
     println!("  --ban <user>                   owner bans a member from the room");
     println!("  --refresh                      reload current room messages");
     println!("  --quit                         exit chat");
-    println!("  any other text                 send encrypted message to the current room");
+    println!("  any other text                 encrypt locally and send ciphertext to the server");
     println!();
     println!("notes:");
     println!("  - active key starts as start");
+    println!("  - default server is http://127.0.0.1:25655");
     println!("  - rooms are independent from keys");
-    println!("  - you must join a room before sending messages");
-    println!("  - room owners can set limits, kick, and ban users");
-    println!("  - wrong key produces unreadable output");
+    println!("  - the client encrypts locally before upload");
+    println!("  - the server stores and returns only ciphertext");
 }
 
 fn parse_chat(args: Vec<String>) -> Result<CliCommand, String> {
     let user = required_flag(&args, "--user")?;
-    Ok(CliCommand::Chat { user })
+    let server = find_flag(&args, "--server").unwrap_or_else(|| "http://127.0.0.1:25655".to_string());
+    Ok(CliCommand::Chat { user, server })
 }
 
 fn required_flag(args: &[String], flag: &str) -> Result<String, String> {

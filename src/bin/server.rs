@@ -121,7 +121,7 @@ async fn run() -> Result<(), String> {
     let port = std::env::var("PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(8080);
+        .unwrap_or(25655);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("server listening on http://{addr}");
 
@@ -478,3 +478,4 @@ fn unix_time_now() -> Result<u64, (StatusCode, Json<ErrorResponse>)> {
         .map(|duration| duration.as_secs())
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "system clock is before unix epoch"))
 }
+

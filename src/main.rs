@@ -1,10 +1,9 @@
 mod app;
 mod cli;
 mod crypto;
-mod model;
 mod store;
 
-use app::{MessengerApp, RoomView};
+use app::{ChatMessageView, MessengerApp, RoomView};
 use chrono::{DateTime, Local};
 use cli::{parse_args, CliCommand};
 use crossterm::cursor::MoveToColumn;
@@ -15,7 +14,7 @@ use crypto::demo_cipher::DemoCipher;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
-use store::FileChatStore;
+use store::ServerApi;
 
 fn main() -> ExitCode {
     match run() {
@@ -29,24 +28,25 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let command = parse_args(std::env::args().skip(1))?;
-    let cipher = DemoCipher::new();
-    let store = FileChatStore::new("data");
-    let app = MessengerApp::new(store, cipher);
 
     match command {
         CliCommand::Help => {
             cli::print_help();
             Ok(())
         }
-        CliCommand::Chat { user } => run_chat(&app, &user),
+        CliCommand::Chat { user, server } => {
+            let cipher = DemoCipher::new();
+            let app = MessengerApp::new(ServerApi::new(server), cipher);
+            run_chat(&app, &user)
+        }
     }
 }
 
-fn run_chat(app: &MessengerApp<FileChatStore, DemoCipher>, user: &str) -> Result<(), String> {
+fn run_chat(app: &MessengerApp<DemoCipher>, user: &str) -> Result<(), String> {
     let mut current_key = app::DEFAULT_CHAT_KEY.to_string();
     let mut current_room: Option<String> = None;
     let mut current_input = String::new();
-    let mut rendered_count = 0usize;
+    let mut last_seen_id: Option<u64> = None;
     let refresh_interval = Duration::from_millis(500);
     let mut last_refresh = Instant::now();
     let _raw_mode = RawModeGuard::enable()?;
@@ -63,7 +63,7 @@ fn run_chat(app: &MessengerApp<FileChatStore, DemoCipher>, user: &str) -> Result
                 app,
                 current_room.as_deref(),
                 &current_key,
-                &mut rendered_count,
+                &mut last_seen_id,
                 user,
                 &current_input,
             )?;
@@ -88,7 +88,7 @@ fn run_chat(app: &MessengerApp<FileChatStore, DemoCipher>, user: &str) -> Result
                     &mut current_key,
                     &mut current_room,
                     &mut current_input,
-                    &mut rendered_count,
+                    &mut last_seen_id,
                 )? {
                     println!();
                     return Ok(());
@@ -105,12 +105,12 @@ fn run_chat(app: &MessengerApp<FileChatStore, DemoCipher>, user: &str) -> Result
 
 fn handle_key_event(
     key_event: KeyEvent,
-    app: &MessengerApp<FileChatStore, DemoCipher>,
+    app: &MessengerApp<DemoCipher>,
     user: &str,
     current_key: &mut String,
     current_room: &mut Option<String>,
     current_input: &mut String,
-    rendered_count: &mut usize,
+    last_seen_id: &mut Option<u64>,
 ) -> Result<bool, String> {
     if !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return Ok(false);
@@ -135,7 +135,7 @@ fn handle_key_event(
             }
 
             if input == "--refresh" {
-                redraw_current_room(app, current_room.as_deref(), current_key, rendered_count)?;
+                redraw_current_room(app, current_room.as_deref(), current_key, last_seen_id)?;
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
@@ -159,7 +159,7 @@ fn handle_key_event(
                 let room_name = current_room.clone().ok_or_else(|| "no active room".to_string())?;
                 app.leave_room(user, &room_name)?;
                 *current_room = None;
-                *rendered_count = 0;
+                *last_seen_id = None;
                 clear_input_line()?;
                 println!("left room: {room_name}");
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
@@ -176,7 +176,7 @@ fn handle_key_event(
 
                 *current_key = new_key.to_string();
                 println!("active key changed to: {current_key}");
-                redraw_current_room(app, current_room.as_deref(), current_key, rendered_count)?;
+                redraw_current_room(app, current_room.as_deref(), current_key, last_seen_id)?;
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
@@ -185,10 +185,10 @@ fn handle_key_event(
                 let (room_name, limit) = parse_room_creation_args(args)?;
                 app.create_room(user, &room_name, limit)?;
                 *current_room = Some(room_name.clone());
-                *rendered_count = 0;
+                *last_seen_id = None;
                 clear_input_line()?;
                 println!("created room: {room_name} (limit {limit})");
-                redraw_current_room(app, current_room.as_deref(), current_key, rendered_count)?;
+                redraw_current_room(app, current_room.as_deref(), current_key, last_seen_id)?;
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
@@ -202,10 +202,10 @@ fn handle_key_event(
                 }
                 app.join_room(user, room_name)?;
                 *current_room = Some(room_name.to_string());
-                *rendered_count = 0;
+                *last_seen_id = None;
                 clear_input_line()?;
                 println!("joined room: {room_name}");
-                redraw_current_room(app, current_room.as_deref(), current_key, rendered_count)?;
+                redraw_current_room(app, current_room.as_deref(), current_key, last_seen_id)?;
                 redraw_prompt(user, current_room.as_deref(), current_input)?;
                 return Ok(false);
             }
@@ -243,7 +243,7 @@ fn handle_key_event(
                 app,
                 current_room.as_deref(),
                 current_key,
-                rendered_count,
+                last_seen_id,
                 user,
                 current_input,
             )?;
@@ -265,36 +265,36 @@ fn handle_key_event(
 }
 
 fn redraw_current_room(
-    app: &MessengerApp<FileChatStore, DemoCipher>,
+    app: &MessengerApp<DemoCipher>,
     current_room: Option<&str>,
     key: &str,
-    rendered_count: &mut usize,
+    last_seen_id: &mut Option<u64>,
 ) -> Result<(), String> {
     clear_input_line()?;
     if let Some(room_name) = current_room {
-        let messages = app.read_room_chat(room_name, key)?;
+        let messages = app.read_room_chat(room_name, key, None)?;
         print_messages(room_name, &messages);
-        *rendered_count = messages.len();
+        *last_seen_id = messages.last().map(|message| message.id);
     } else {
-        *rendered_count = 0;
+        *last_seen_id = None;
         println!("no active room");
     }
     Ok(())
 }
 
 fn refresh_new_messages(
-    app: &MessengerApp<FileChatStore, DemoCipher>,
+    app: &MessengerApp<DemoCipher>,
     current_room: Option<&str>,
     key: &str,
-    rendered_count: &mut usize,
+    last_seen_id: &mut Option<u64>,
     user: &str,
     current_input: &str,
 ) -> Result<(), String> {
     if let Some(room_name) = current_room {
-        let messages = app.read_room_chat(room_name, key)?;
-        if messages.len() > *rendered_count {
+        let messages = app.read_room_chat(room_name, key, *last_seen_id)?;
+        if !messages.is_empty() {
             clear_input_line()?;
-            for message in &messages[*rendered_count..] {
+            for message in &messages {
                 println!(
                     "[{}] {}: {}",
                     format_timestamp(message.timestamp),
@@ -302,7 +302,7 @@ fn refresh_new_messages(
                     message.text
                 );
             }
-            *rendered_count = messages.len();
+            *last_seen_id = messages.last().map(|message| message.id).or(*last_seen_id);
         }
     }
 
@@ -326,7 +326,7 @@ fn clear_input_line() -> Result<(), String> {
         .map_err(|error| format!("failed to clear input line: {error}"))
 }
 
-fn print_messages(room_name: &str, messages: &[model::DecryptedMessage]) {
+fn print_messages(room_name: &str, messages: &[ChatMessageView]) {
     if messages.is_empty() {
         println!("no messages in room {room_name}");
         return;
@@ -410,3 +410,4 @@ impl Drop for RawModeGuard {
         let _ = terminal::disable_raw_mode();
     }
 }
+
